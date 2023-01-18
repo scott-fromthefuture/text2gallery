@@ -35,4 +35,4 @@ Then get the source and destination channel ID's for the script, following this 
 </a>
 
 
-Configure congig.py and send it
+Configure config.py and send it
