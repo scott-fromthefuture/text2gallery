@@ -27,7 +27,7 @@ A person with credentials on the target and source servers must open the followi
 'https://discord.com/api/oauth2/authorize?client_id=' + CLIENT_ID + '&permissions=' + PERMS + '&scope=bot%20applications.commands
 ``` 
 
-Then get the source and destination channel ID's for the script, following this incredible guid on how to right-click:
+Then get the source and destination channel ID's for the script, following this incredible guide on how to right-click:
 
 
 <a href="https://www.youtube.com/watch?v=ySZWoD5UpgA">
