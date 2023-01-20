@@ -12,13 +12,26 @@
 # for a specific case. Adapt to your needs, but do not use blindly      #
 # as is. Is missing certain useful features and can be expanded on.     #
 #                                                                       #
-# START WITH THE -README.MD- and -config.py-                            #
+# START WITH THE README.MD                                              #
 #                                                                       #
 #########################################################################
 
 import discord
+from discord.ext import commands
 import os
-import config
+import time
+import datetime
+import random
+import string
+import re
+
+# configuration
+BOT_TOKEN = ""
+SOURCE_CHANNEL_ID = 0         # text channel
+DESTINATION_CHANNEL_ID = 0   # forum gallery
+
+seconds_per_message = 1  # for rate limt
+save_attachments = True  # all images will be saved in archive/ locally  
 
 # Attachments to move
 target_exts = (
@@ -31,44 +44,154 @@ target_exts = (
     'webm',
     'mp4')
 
-client =discord.ext.commands.Bot(command_prefix=">", intents=discord.Intents.all())
+# connect discord bot
+client = commands.Bot(command_prefix=">", intents=discord.Intents.all())
+
+
+# create directories if they dont exist
+def createStructure():
+    if not os.path.exists("transfer"):
+        os.makedirs("transfer")
+    if not os.path.exists("archive") and save_attachments:
+        os.makedirs("archive")
+
+
+# check if message has any attachemnst we want
+def checkAttachment(message):
+    attachments = []
+    if message.attachments:
+        for attachment in message.attachments:
+
+            # if it has an attachment, check if extension is included
+            included = str(attachment).lower().endswith(target_exts)
+            if included:
+                attachments.append(attachment)
+
+    # if attachements, return them       
+    if len(attachments) > 0:
+        return attachments
+    else:
+        return False
+
+
+# iterate through messages and remove ones without attachment
+def filterMessages(messages):
+    messages_tokeep = []
+
+    for message in messages:
+        # check if the message has an attachment
+        attachments = checkAttachment(message)
+
+        # if no attachments, next messages
+        if not attachments:
+            print("attachment false | no target attachment")
+            continue   
+
+        # otherwise, has attachemnt so keep message
+        print("attachment true  | keeping message")
+        messages_tokeep.append(message)
+
+    return messages_tokeep
+
+
+def cleanup(file):
+    # if we want to save images, move them
+    if save_attachments:
+        dest_path = "archive/"
+        destination = dest_path + str(os.path.basename(file))
+        os.rename(file, destination)
+    else:
+        # not saving, so remove
+        os.remove(file) 
+
 
 # connect client
 @client.event
 async def on_ready():
+    starttime = time.time()
 
-    # get the source and destination channels by ID
-    source_channel = client.get_channel(config.SOURCE_CHANNEL_ID)
-    destination_channel = client.get_channel(config.DESTINATION_CHANNEL_ID)
+    # get all message history from teh source channel
+    print("\nscanning message history in source channel...")
+    source_channel = client.get_channel(SOURCE_CHANNEL_ID)
+    raw_messages = [message async for message in source_channel.history(
+        limit=None, oldest_first=True)]
+    rawmessage_count = len(raw_messages)
 
-    # iterate through messages in source channel
-    async for message in source_channel.history():
+    # iterate through messages and remove ones without attachments
+    print(f"removing messages with no desirable attachment...")
+    messages = filterMessages(raw_messages)
+
+    # we now have a list of only the messages we want to get attachemnts from
+    message_count = len(messages)
+    print(f"\n  total messages: {rawmessage_count}")
+    print(f"messages skipped: {rawmessage_count - message_count}")
+    print(f"   messages kept: {message_count}\n")
+
+    # begin pricessing messages
+    createStructure()
+    destination_channel = client.get_channel(DESTINATION_CHANNEL_ID)
+    skipping = transferring = failed = total = 0
+
+    for message in messages:
+        total += 1
 
         # check if the message has an attachment
-        if message.attachments:
-            for attachment in message.attachments:
-                included = str(attachment).lower().endswith(target_exts)
-                
-                # check if the attachment is a file type we want to move
-                if included:
+        attachments = checkAttachment(message)
 
-                    # download the file
-                    await attachment.save(attachment.filename)
+        # if no attachments, next messages
+        if not attachments:
+            skipping += 1
+            reason = "skipping, no target attachments"
+            continue
 
-                    # open the file
-                    with open(attachment.filename, "rb") as f:
-                        file = discord.File(f)
+        # otherwise that means we have attachments
+        for attachment in attachments:
 
-                        # send message with file attached in destination channel
-                        # include original poster's username
-                        await destination_channel.create_thread(
-                            name="Originaly posted by " + str(message.author),
-                            content="Originaly posted by @" + str(message.author), 
-                            file=file)
+            try:              
+                # rename file and download
+                raw_username = message.author.display_name
+                s=string.ascii_letters + string.digits
+                randomid = ''.join(random.sample(s,6))
+                file_username = "".join([c for c in str(raw_username) if re.match(r'\w', c)])
+                tmpfile_path = "transfer/"
+                tmpfile_filename = str(file_username) + str(f"_{randomid}_") + str(attachment.filename)
+                tmpfile = tmpfile_path + tmpfile_filename
 
-                        # remove tmp file stored locally
-                        os.remove(attachment.filename) 
+                await attachment.save(tmpfile)
+
+                # open the file
+                with open(tmpfile, "rb") as f:
+                    file = discord.File(f)
+
+                    # include original poster's username
+                    mention = message.author.mention
                     
+                    # send message with file attached in destination channel
+                    await destination_channel.create_thread(
+                        auto_archive_duration=60,
+                        name="Posted by: " + str(raw_username),
+                        content="Originaly posted by " + str(mention) + " on " + 
+                        str(message.created_at.strftime('%a %d-%m-%Y')), file=file)
+
+                    # handle local file
+                    cleanup(tmpfile)
+
+                    # update stats
+                    reason = "✓  " + str(attachment.filename)                 
+                    transferring += 1
+
+            # if transfer fails, continue with next
+            except Exception as error:
+                reason = "x  " + str(error)
+                failed += 1
+
+        # print stats, and sleep before next to prevent rate limit
+        remaining = message_count - total
+        elapsed_time = str(datetime.timedelta(seconds=time.time() - starttime))
+        print(f"{elapsed_time}  | success {transferring} skipped {skipping} failed {failed} |  msgs {total} (r: {remaining}) {reason}")
+        time.sleep(seconds_per_message)
+
+
 # run script                    
 if __name__=="__main__":        
-    client.run(config.BOT_TOKEN)
+    client.run(BOT_TOKEN)
